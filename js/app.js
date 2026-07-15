@@ -441,6 +441,12 @@ async function viewSettings() {
       <p style="color:var(--muted);font-size:12.5px">列印以下 QR Code 貼在倉庫，同仁用手機掃描即可登記固定資產租借歸還／銷耗資產領用，不需要登入帳號。</p>
       <div class="qrcode-box"><img id="qrImg" width="180" height="180"/></div>
       <p style="margin-top:10px"><a href="#/qr" target="_blank">${location.origin + location.pathname}#/qr</a></p>
+    </div>
+    <div class="panel" style="max-width:480px">
+      <h3>💾 資料備份</h3>
+      <p style="color:var(--muted);font-size:12.5px">系統每天會自動備份一份到你的 Google Drive「${'設備管理系統備份'}」資料夾（最多保留 20 份，自動清除舊備份）；定期報表信件也會自動附上完整 Excel 檔案。你也可以隨時手動備份一次。</p>
+      <button class="btn btn-primary btn-sm" id="backupNowBtn">立即備份一份</button>
+      <div id="backupList" style="margin-top:14px"></div>
     </div>`;
   const qrUrl = location.origin + location.pathname + '#/qr';
   $('#qrImg').src = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(qrUrl);
@@ -448,6 +454,30 @@ async function viewSettings() {
     try { await Api.updateSettings({ email: $('#st_email').value.trim(), cycle: $('#st_cycle').value }); toast('已儲存', 'success'); }
     catch (e) { toast(e.message, 'error'); }
   });
+  $('#backupNowBtn').addEventListener('click', async () => {
+    $('#backupNowBtn').disabled = true; $('#backupNowBtn').textContent = '備份中...';
+    try {
+      await Api.backupNow();
+      toast('備份完成', 'success');
+      loadBackupList();
+    } catch (e) { toast(e.message, 'error'); }
+    finally { $('#backupNowBtn').disabled = false; $('#backupNowBtn').textContent = '立即備份一份'; }
+  });
+  loadBackupList();
+}
+
+async function loadBackupList() {
+  const el = $('#backupList');
+  if (!el) return;
+  el.innerHTML = `<div class="empty">載入備份紀錄...</div>`;
+  try {
+    const res = await Api.listBackups();
+    const list = res.data || [];
+    el.innerHTML = list.length ? list.slice(0, 10).map(b => `
+      <div class="log-item"><div>${esc(b.name)}<div class="meta">${fmtDate(b.createdAt)}</div></div>
+      <a class="btn btn-ghost btn-sm" href="${esc(b.url)}" target="_blank" style="text-decoration:none">開啟</a></div>`).join('')
+      : `<div class="empty">尚無備份紀錄</div>`;
+  } catch (e) { el.innerHTML = `<div class="empty">載入失敗：${esc(e.message)}</div>`; }
 }
 
 // ================= 報表下載 =================
