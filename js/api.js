@@ -45,9 +45,12 @@ const Api = (function () {
     qrSubmit: (data) => call('qrSubmit', data),
 
     report: (type) => call('report', { type }),
+    backupNow: () => call('backupNow', {}),
+    listBackups: () => call('listBackups', {}),
 
     setToken(t) { localStorage.setItem('ems_token', t); },
     clearToken() { localStorage.removeItem('ems_token'); },
     token,
   };
 })();
+
