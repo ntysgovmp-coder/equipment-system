@@ -36,7 +36,7 @@ const Api = (function () {
     listStaff: () => call('listStaff', {}),
     addStaff: (data) => call('addStaff', data),
     updateStaff: (data) => call('updateStaff', data),
-    deleteStaff: (name) => call('deleteStaff', { name }),
+    deleteStaff: (id) => call('deleteStaff', { id }),
 
     getSettings: () => call('getSettings', {}),
     updateSettings: (data) => call('updateSettings', data),
@@ -53,4 +53,3 @@ const Api = (function () {
     token,
   };
 })();
-
