@@ -498,7 +498,7 @@ async function viewStaff() {
       <tbody>${list.map(s => `<tr><td>${esc(s['單位'])}</td><td>${esc(s['員工姓名'])}</td><td>${s['狀態'] === '在職' ? '<span class="badge ok">在職</span>' : '<span class="badge neutral">離職</span>'}</td>
         <td class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="${esc(s['員工ID'])}">編輯</button><button class="btn btn-danger btn-sm" data-del="${esc(s['員工ID'])}">刪除</button></td></tr>`).join('')}</tbody></table>`
       : `<div class="empty">尚無符合條件的人員資料</div>`;
-    $('#staffTableWrap').querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => openStaffForm(data.find(s => s['員工ID'] === b.dataset.edit))));
+    $('#staffTableWrap').querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => openStaffForm(data.find(s => s['員工ID'] === b.dataset.edit), data)));
     $('#staffTableWrap').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
       if (!confirm('確定要刪除此人員嗎？')) return;
       await guard(Api.deleteStaff(b.dataset.del)); resetStaffCache(); toast('已刪除', 'success'); viewStaff();
@@ -509,19 +509,28 @@ async function viewStaff() {
     const v = $('#statusFilter').value;
     draw(v === 'all' ? data : data.filter(s => s['狀態'] === v));
   });
-  $('#addBtn').addEventListener('click', () => openStaffForm());
+  $('#addBtn').addEventListener('click', () => openStaffForm(null, data));
 }
 
-function openStaffForm(existing) {
+function allUnitsOf(staffList) {
+  return Array.from(new Set((staffList || []).filter(s => s['單位']).map(s => s['單位'])));
+}
+
+function openStaffForm(existing, staffList) {
+  const units = allUnitsOf(staffList || []);
   openModal(`
     <h3>${existing ? '編輯人員：' + esc(existing['員工姓名']) : '新增人員'}</h3>
-    <div class="field"><label>單位</label><input id="s_unit" value="${esc(existing ? existing['單位'] : '')}"/></div>
+    <div class="field"><label>單位</label>${searchableSelectHtml('s_unit', '選擇既有單位，或直接打字新增單位')}</div>
     <div class="field"><label>員工姓名</label><input id="s_name" value="${esc(existing ? existing['員工姓名'] : '')}"/></div>
     <div class="field"><label>狀態</label><select id="s_status"><option ${!existing || existing['狀態'] === '在職' ? 'selected' : ''}>在職</option><option ${existing && existing['狀態'] === '離職' ? 'selected' : ''}>離職</option></select></div>
     <div class="modal-actions"><button class="btn btn-ghost" id="cancelBtn">取消</button><button class="btn btn-primary" id="saveBtn">儲存</button></div>`);
+  const unitCtrl = initSearchableSelect('s_unit', units);
+  if (existing && existing['單位']) unitCtrl.setValue(existing['單位']);
   $('#cancelBtn').addEventListener('click', closeModal);
   $('#saveBtn').addEventListener('click', async () => {
-    const unit = $('#s_unit').value.trim(), name = $('#s_name').value.trim(), status = $('#s_status').value;
+    const unit = (unitCtrl.getValue() || unitCtrl.getText()).trim();
+    const name = $('#s_name').value.trim(), status = $('#s_status').value;
+    if (!unit) { toast('請選擇或輸入單位', 'error'); return; }
     if (!name) { toast('請輸入姓名', 'error'); return; }
     try {
       if (existing) await Api.updateStaff({ id: existing['員工ID'], unit, name, status });
