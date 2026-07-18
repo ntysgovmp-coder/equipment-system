@@ -518,17 +518,26 @@ function allUnitsOf(staffList) {
 
 function openStaffForm(existing, staffList) {
   const units = allUnitsOf(staffList || []);
+  const currentUnit = existing ? existing['單位'] : '';
+  const isKnownUnit = !currentUnit || units.includes(currentUnit);
   openModal(`
     <h3>${existing ? '編輯人員：' + esc(existing['員工姓名']) : '新增人員'}</h3>
-    <div class="field"><label>單位</label>${searchableSelectHtml('s_unit', '選擇既有單位，或直接打字新增單位')}</div>
+    <div class="field"><label>單位</label>
+      <select id="s_unit">
+        <option value="">-- 請選擇單位 --</option>
+        ${units.map(u => `<option ${u === currentUnit ? 'selected' : ''}>${esc(u)}</option>`).join('')}
+        <option value="__new__" ${!isKnownUnit ? 'selected' : ''}>+ 新增單位...</option>
+      </select>
+    </div>
+    <div class="field ${isKnownUnit ? 'hidden' : ''}" id="newUnitField"><label>新單位名稱</label><input id="s_unit_new" value="${esc(!isKnownUnit ? currentUnit : '')}"/></div>
     <div class="field"><label>員工姓名</label><input id="s_name" value="${esc(existing ? existing['員工姓名'] : '')}"/></div>
     <div class="field"><label>狀態</label><select id="s_status"><option ${!existing || existing['狀態'] === '在職' ? 'selected' : ''}>在職</option><option ${existing && existing['狀態'] === '離職' ? 'selected' : ''}>離職</option></select></div>
     <div class="modal-actions"><button class="btn btn-ghost" id="cancelBtn">取消</button><button class="btn btn-primary" id="saveBtn">儲存</button></div>`);
-  const unitCtrl = initSearchableSelect('s_unit', units);
-  if (existing && existing['單位']) unitCtrl.setValue(existing['單位']);
+  $('#s_unit').addEventListener('change', () => $('#newUnitField').classList.toggle('hidden', $('#s_unit').value !== '__new__'));
   $('#cancelBtn').addEventListener('click', closeModal);
   $('#saveBtn').addEventListener('click', async () => {
-    const unit = (unitCtrl.getValue() || unitCtrl.getText()).trim();
+    const sel = $('#s_unit').value;
+    const unit = sel === '__new__' ? $('#s_unit_new').value.trim() : sel;
     const name = $('#s_name').value.trim(), status = $('#s_status').value;
     if (!unit) { toast('請選擇或輸入單位', 'error'); return; }
     if (!name) { toast('請輸入姓名', 'error'); return; }
