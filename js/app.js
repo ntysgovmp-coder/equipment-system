@@ -28,6 +28,98 @@ async function guard(promise) {
   }
 }
 
+// ================= 可搜尋選單元件（打字即可篩選，桌機/手機通用） =================
+function searchableSelectHtml(id, placeholder) {
+  return `<div class="ssel" id="wrap_${id}">
+    <input type="text" id="${id}_input" placeholder="${esc(placeholder || '點選或輸入搜尋...')}" autocomplete="off"/>
+    <input type="hidden" id="${id}_value"/>
+    <div class="ssel-list" id="${id}_list"></div>
+  </div>`;
+}
+
+// options：字串陣列，或 {value,label} 物件陣列
+function initSearchableSelect(id, options, onChange) {
+  let norm = (options || []).map(o => (typeof o === 'string' ? { value: o, label: o } : o));
+  const input = document.getElementById(id + '_input');
+  const hidden = document.getElementById(id + '_value');
+  const list = document.getElementById(id + '_list');
+  if (!input) return null;
+
+  function render(filter) {
+    const f = (filter || '').trim().toLowerCase();
+    const matches = f ? norm.filter(o => o.label.toLowerCase().includes(f)) : norm;
+    list.innerHTML = matches.length
+      ? matches.map(o => `<div class="ssel-item" data-v="${esc(o.value)}">${esc(o.label)}</div>`).join('')
+      : `<div class="ssel-empty">找不到符合的項目</div>`;
+    list.classList.add('show');
+    list.querySelectorAll('.ssel-item').forEach(el => el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const v = el.dataset.v;
+      const opt = norm.find(o => o.value === v);
+      input.value = opt ? opt.label : v;
+      hidden.value = v;
+      list.classList.remove('show');
+      if (onChange) onChange(v);
+    }));
+  }
+  input.addEventListener('focus', () => render(input.value));
+  input.addEventListener('input', () => { hidden.value = ''; render(input.value); if (onChange) onChange(''); });
+  input.addEventListener('blur', () => setTimeout(() => list.classList.remove('show'), 150));
+
+  return {
+    setOptions(newOptions) { norm = (newOptions || []).map(o => (typeof o === 'string' ? { value: o, label: o } : o)); },
+    getValue() { return hidden.value; },
+    getText() { return input.value.trim(); },
+    setValue(v) {
+      const opt = norm.find(o => o.value === v);
+      hidden.value = v || '';
+      input.value = opt ? opt.label : (v || '');
+    },
+    clear() { hidden.value = ''; input.value = ''; },
+  };
+}
+
+// ================= 人員資料快取（給經辦人選單使用） =================
+let _staffListCache = null;
+async function getStaffList() {
+  if (_staffListCache) return _staffListCache;
+  try { const res = await Api.listStaff(); _staffListCache = res.data || []; }
+  catch (e) { _staffListCache = []; }
+  return _staffListCache;
+}
+function resetStaffCache() { _staffListCache = null; }
+function activeUnitsOf(staffList) {
+  return Array.from(new Set(staffList.filter(s => s['狀態'] === '在職' && s['單位']).map(s => s['單位'])));
+}
+function activeNamesOf(staffList, unit) {
+  return staffList.filter(s => s['狀態'] === '在職' && (!unit || s['單位'] === unit)).map(s => s['員工姓名']);
+}
+
+// 單位／經辦人 兩層可搜尋選單（先選單位，再從該單位在職人員中挑選姓名；也可直接打字搜尋姓名）
+function unitPersonFieldsHtml(prefix, unitLabel, personLabel) {
+  return `
+    <div class="field"><label>${unitLabel || '單位'}</label>${searchableSelectHtml(prefix + '_unit', '輸入或點選單位')}</div>
+    <div class="field"><label>${personLabel || '經辦人'}</label>${searchableSelectHtml(prefix + '_person', '先選單位，或直接搜尋姓名')}</div>`;
+}
+function _wireCascade(prefix, units, namesForUnit) {
+  const personCtrl = initSearchableSelect(prefix + '_person', namesForUnit(''));
+  const unitCtrl = initSearchableSelect(prefix + '_unit', units, (u) => {
+    personCtrl.setOptions(namesForUnit(u));
+    personCtrl.clear();
+  });
+  return { unitCtrl, personCtrl };
+}
+// 後台已登入頁面使用：從伺服器取得完整在職人員清單
+async function wireUnitPersonFields(prefix) {
+  const staffList = await getStaffList();
+  return _wireCascade(prefix, activeUnitsOf(staffList), (u) => activeNamesOf(staffList, u));
+}
+// QR 免登入流程使用：staffSimpleList 為 [{unit,name}]，來自 qrInit（伺服器已過濾在職人員）
+function wireUnitPersonFieldsQR(prefix, staffSimpleList) {
+  const units = Array.from(new Set(staffSimpleList.map(s => s.unit).filter(Boolean)));
+  return _wireCascade(prefix, units, (u) => staffSimpleList.filter(s => !u || s.unit === u).map(s => s.name));
+}
+
 // ================= App Shell =================
 const NAV = [
   { href: '#/dashboard', label: '主頁面', icon: '🏠' },
@@ -246,12 +338,12 @@ async function viewFixedDetail(id) {
   $('#content').querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', () => openFixedActionForm(a, btn.dataset.act)));
 }
 
-function openFixedActionForm(asset, action) {
+async function openFixedActionForm(asset, action) {
   const needsQty = action === '採購';
   const needsDate = action === '借出' || action === '歸還';
   openModal(`
     <h3>${action}：${esc(asset['品項名稱'])}</h3>
-    <div class="field"><label>經辦人 / 借用人</label><input id="a_person" placeholder="姓名"/></div>
+    ${unitPersonFieldsHtml('a', '單位', '經辦人 / 借用人')}
     ${needsQty ? `<div class="field"><label>數量</label><input id="a_qty" type="number" min="1" value="1"/></div>` : ''}
     ${needsDate ? `<div class="field"><label>${action === '借出' ? '預計歸還日期' : '實際歸還日期'}</label><input id="a_date" type="date"/></div>` : ''}
     <div class="field"><label>備註</label><input id="a_note" placeholder="租借原因等"/></div>
@@ -259,9 +351,12 @@ function openFixedActionForm(asset, action) {
       <button class="btn btn-ghost" id="cancelBtn">取消</button>
       <button class="btn btn-primary" id="okBtn">確認</button>
     </div>`);
+  const { personCtrl } = await wireUnitPersonFields('a');
   $('#cancelBtn').addEventListener('click', closeModal);
   $('#okBtn').addEventListener('click', async () => {
-    const payload = { id: asset['資產編號'], action, qty: needsQty ? Number($('#a_qty').value) : 1, person: $('#a_person').value.trim(), note: $('#a_note').value.trim() };
+    const person = personCtrl.getValue();
+    if (!person) { toast('請先選單位，再從清單點選經辦人姓名', 'error'); return; }
+    const payload = { id: asset['資產編號'], action, qty: needsQty ? Number($('#a_qty').value) : 1, person, note: $('#a_note').value.trim() };
     if (needsDate) { const v = $('#a_date').value; if (action === '借出') payload.expectedReturn = v; else payload.actualReturn = v; }
     try { await Api.fixedAssetAction(payload); closeModal(); toast('已登記', 'success'); viewFixedDetail(asset['資產編號']); }
     catch (e) { toast(e.message, 'error'); }
@@ -360,17 +455,20 @@ async function viewConsDetail(id) {
     if (!confirm('確定要刪除此銷耗資產嗎？')) return;
     await guard(Api.deleteConsumable(item['資產編號'])); toast('已刪除', 'success'); location.hash = '#/cons';
   });
-  $('#content').querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', () => {
+  $('#content').querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', async () => {
     openModal(`
       <h3>${btn.dataset.act}：${esc(item['品項名稱'])}</h3>
-      <div class="field"><label>經辦人</label><input id="a_person"/></div>
+      ${unitPersonFieldsHtml('a', '單位', '經辦人')}
       <div class="field"><label>數量</label><input id="a_qty" type="number" min="1" value="1"/></div>
       <div class="field"><label>備註</label><input id="a_note"/></div>
       <div class="modal-actions"><button class="btn btn-ghost" id="cancelBtn">取消</button><button class="btn btn-primary" id="okBtn">確認</button></div>`);
+    const { personCtrl } = await wireUnitPersonFields('a');
     $('#cancelBtn').addEventListener('click', closeModal);
     $('#okBtn').addEventListener('click', async () => {
+      const person = personCtrl.getValue();
+      if (!person) { toast('請先選單位，再從清單點選經辦人姓名', 'error'); return; }
       try {
-        await Api.consumableAction({ id: item['資產編號'], action: btn.dataset.act, qty: Number($('#a_qty').value), person: $('#a_person').value.trim(), note: $('#a_note').value.trim() });
+        await Api.consumableAction({ id: item['資產編號'], action: btn.dataset.act, qty: Number($('#a_qty').value), person, note: $('#a_note').value.trim() });
         closeModal(); toast('已登記', 'success'); viewConsDetail(item['資產編號']);
       } catch (e) { toast(e.message, 'error'); }
     });
@@ -385,23 +483,38 @@ async function viewStaff() {
   const data = res.data;
   $('#content').innerHTML = `
     <div class="panel">
-      <div class="toolbar"><div></div><button class="btn btn-primary" id="addBtn">+ 新增人員</button></div>
-      ${data.length ? `<table><thead><tr><th>單位</th><th>員工姓名</th><th>狀態</th><th></th></tr></thead>
-        <tbody>${data.map(s => `<tr><td>${esc(s['單位'])}</td><td>${esc(s['員工姓名'])}</td><td>${s['狀態'] === '在職' ? '<span class="badge ok">在職</span>' : '<span class="badge neutral">離職</span>'}</td>
-          <td class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="${esc(s['員工姓名'])}">編輯</button><button class="btn btn-danger btn-sm" data-del="${esc(s['員工姓名'])}">刪除</button></td></tr>`).join('')}</tbody></table>`
-        : `<div class="empty">尚無人員資料</div>`}
+      <div class="toolbar">
+        <select id="statusFilter" style="width:150px">
+          <option value="all">顯示全部</option>
+          <option value="在職">只顯示在職</option>
+          <option value="離職">只顯示離職</option>
+        </select>
+        <button class="btn btn-primary" id="addBtn">+ 新增人員</button>
+      </div>
+      <div id="staffTableWrap"></div>
     </div>`;
+  function draw(list) {
+    $('#staffTableWrap').innerHTML = list.length ? `<table><thead><tr><th>單位</th><th>員工姓名</th><th>狀態</th><th></th></tr></thead>
+      <tbody>${list.map(s => `<tr><td>${esc(s['單位'])}</td><td>${esc(s['員工姓名'])}</td><td>${s['狀態'] === '在職' ? '<span class="badge ok">在職</span>' : '<span class="badge neutral">離職</span>'}</td>
+        <td class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="${esc(s['員工ID'])}">編輯</button><button class="btn btn-danger btn-sm" data-del="${esc(s['員工ID'])}">刪除</button></td></tr>`).join('')}</tbody></table>`
+      : `<div class="empty">尚無符合條件的人員資料</div>`;
+    $('#staffTableWrap').querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => openStaffForm(data.find(s => s['員工ID'] === b.dataset.edit))));
+    $('#staffTableWrap').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('確定要刪除此人員嗎？')) return;
+      await guard(Api.deleteStaff(b.dataset.del)); resetStaffCache(); toast('已刪除', 'success'); viewStaff();
+    }));
+  }
+  draw(data);
+  $('#statusFilter').addEventListener('change', () => {
+    const v = $('#statusFilter').value;
+    draw(v === 'all' ? data : data.filter(s => s['狀態'] === v));
+  });
   $('#addBtn').addEventListener('click', () => openStaffForm());
-  $('#content').querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => openStaffForm(data.find(s => s['員工姓名'] === b.dataset.edit))));
-  $('#content').querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
-    if (!confirm('確定要刪除此人員嗎？')) return;
-    await guard(Api.deleteStaff(b.dataset.del)); toast('已刪除', 'success'); viewStaff();
-  }));
 }
 
 function openStaffForm(existing) {
   openModal(`
-    <h3>${existing ? '編輯人員' : '新增人員'}</h3>
+    <h3>${existing ? '編輯人員：' + esc(existing['員工姓名']) : '新增人員'}</h3>
     <div class="field"><label>單位</label><input id="s_unit" value="${esc(existing ? existing['單位'] : '')}"/></div>
     <div class="field"><label>員工姓名</label><input id="s_name" value="${esc(existing ? existing['員工姓名'] : '')}"/></div>
     <div class="field"><label>狀態</label><select id="s_status"><option ${!existing || existing['狀態'] === '在職' ? 'selected' : ''}>在職</option><option ${existing && existing['狀態'] === '離職' ? 'selected' : ''}>離職</option></select></div>
@@ -411,8 +524,9 @@ function openStaffForm(existing) {
     const unit = $('#s_unit').value.trim(), name = $('#s_name').value.trim(), status = $('#s_status').value;
     if (!name) { toast('請輸入姓名', 'error'); return; }
     try {
-      if (existing) await Api.updateStaff({ oldName: existing['員工姓名'], unit, name, status });
+      if (existing) await Api.updateStaff({ id: existing['員工ID'], unit, name, status });
       else await Api.addStaff({ unit, name, status });
+      resetStaffCache();
       closeModal(); toast('已儲存', 'success'); viewStaff();
     } catch (e) { toast(e.message, 'error'); }
   });
@@ -486,6 +600,8 @@ const REPORT_TYPES = [
   { key: 'lowStock', label: '低於安全庫存的銷耗資產' },
   { key: 'fixedStatus', label: '固定資產各項目前狀態' },
   { key: 'consTotal', label: '銷耗資產各項總量' },
+  { key: 'purchase', label: '待採購表單（品項與建議採購數量）' },
+  { key: 'repair', label: '待維修表單（固定資產損壞數量）' },
 ];
 
 function viewReports() {
@@ -550,14 +666,15 @@ function qrShell(stepIdx, innerHtml) {
 }
 
 function qrStepPerson() {
-  const staff = qrState.init.staff || [];
+  const staff = qrState.init.staff || []; // [{unit,name}]
   qrShell(0, `
-    <h3 style="margin-top:0">請選擇你的姓名</h3>
-    <div class="field"><select id="personSel" style="width:100%"><option value="">-- 請選擇 --</option>${staff.map(n => `<option>${esc(n)}</option>`).join('')}</select></div>
-    <button class="btn btn-primary btn-block" id="nextBtn">下一步</button>`);
+    <h3 style="margin-top:0">請選擇你的單位與姓名</h3>
+    ${unitPersonFieldsHtml('qr', '單位', '姓名')}
+    <button class="btn btn-primary btn-block" id="nextBtn" style="margin-top:6px">下一步</button>`);
+  const { personCtrl } = wireUnitPersonFieldsQR('qr', staff);
   $('#nextBtn').addEventListener('click', () => {
-    const v = $('#personSel').value;
-    if (!v) { toast('請選擇姓名', 'error'); return; }
+    const v = personCtrl.getValue();
+    if (!v) { toast('請先選單位，再從清單點選你的姓名', 'error'); return; }
     qrState.person = v;
     qrStepType();
   });
@@ -601,33 +718,32 @@ function nameOf(e) {
 
 function openQrEntryForm(type) {
   const list = type === 'fixed' ? qrState.init.fixed : qrState.init.cons;
+  const options = list.map(x => ({ value: x.id, label: x.name }));
   openModal(`
     <h3>${type === 'fixed' ? '新增固定資產登記' : '新增銷耗資產登記'}</h3>
-    <div class="field"><label>設備項目</label>
-      <select id="itemSel"><option value="__new__">+ 新增品項...</option>${list.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>
-    </div>
-    <div class="field hidden" id="newNameField"><label>新品項名稱</label><input id="newName"/></div>
+    <div class="field"><label>設備項目</label>${searchableSelectHtml('qi_item', '輸入搜尋，找不到就直接打新名稱新增')}</div>
     ${type === 'fixed' ? `
       <div class="field"><label>動作</label><select id="actionSel"><option value="借出">借出</option><option value="歸還">歸還</option></select></div>
       <div class="field"><label id="dateLabel">預計歸還日期</label><input id="dateInput" type="date"/></div>
       <div class="field"><label>備註（租借原因等）</label><input id="noteInput"/></div>`
       : `<div class="field"><label>取出數量</label><input id="qtyInput" type="number" min="1" value="1"/></div>`}
     <div class="modal-actions"><button class="btn btn-ghost" id="cancelBtn">取消</button><button class="btn btn-primary" id="addBtn">加入清單</button></div>`);
-  $('#itemSel').addEventListener('change', () => $('#newNameField').classList.toggle('hidden', $('#itemSel').value !== '__new__'));
+  const itemCtrl = initSearchableSelect('qi_item', options);
   if (type === 'fixed') {
     $('#actionSel').addEventListener('change', () => { $('#dateLabel').textContent = $('#actionSel').value === '借出' ? '預計歸還日期' : '實際歸還日期'; });
   }
   $('#cancelBtn').addEventListener('click', closeModal);
   $('#addBtn').addEventListener('click', () => {
-    const sel = $('#itemSel').value;
-    const isNew = sel === '__new__';
-    const newName = isNew ? $('#newName').value.trim() : '';
-    if (isNew && !newName) { toast('請輸入新品項名稱', 'error'); return; }
+    const id = itemCtrl.getValue();
+    const typedText = itemCtrl.getText();
+    const isNew = !id;
+    if (!typedText) { toast('請輸入或選擇設備項目', 'error'); return; }
+    const newName = isNew ? typedText : '';
     if (type === 'fixed') {
-      qrState.entries.push({ type: 'fixed', id: isNew ? null : sel, isNew, newName, action: $('#actionSel').value, date: $('#dateInput').value, note: $('#noteInput').value.trim() });
+      qrState.entries.push({ type: 'fixed', id: isNew ? null : id, isNew, newName, action: $('#actionSel').value, date: $('#dateInput').value, note: $('#noteInput').value.trim() });
     } else {
       const qty = Number($('#qtyInput').value || 1);
-      qrState.entries.push({ type: 'cons', id: isNew ? null : sel, isNew, newName, qty });
+      qrState.entries.push({ type: 'cons', id: isNew ? null : id, isNew, newName, qty });
     }
     closeModal(); renderEntryList();
   });
