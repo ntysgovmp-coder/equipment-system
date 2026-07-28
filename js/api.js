@@ -47,6 +47,7 @@ const Api = (function () {
     report: (type) => call('report', { type }),
     backupNow: () => call('backupNow', {}),
     listBackups: () => call('listBackups', {}),
+    listCategories: (itemType) => call('listCategories', { itemType }),
 
     setToken(t) { localStorage.setItem('ems_token', t); },
     clearToken() { localStorage.removeItem('ems_token'); },
