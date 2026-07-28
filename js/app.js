@@ -120,6 +120,40 @@ function wireUnitPersonFieldsQR(prefix, staffSimpleList) {
   return _wireCascade(prefix, units, (u) => staffSimpleList.filter(s => !u || s.unit === u).map(s => s.name));
 }
 
+// ================= 分類選單（給固定/銷耗資產新增編輯使用，可選既有分類或新增分類） =================
+async function fetchCategories(itemType) {
+  try { const res = await Api.listCategories(itemType); return res.data || []; }
+  catch (e) { return []; }
+}
+function categoryFieldHtml(id, categories, currentValue) {
+  const isKnown = !currentValue || categories.includes(currentValue);
+  return `
+    <div class="field"><label>分類</label>
+      <select id="${id}">
+        <option value="">-- 請選擇分類 --</option>
+        ${categories.map(c => `<option ${c === currentValue ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+        <option value="__new__" ${!isKnown ? 'selected' : ''}>+ 新增分類...</option>
+      </select>
+    </div>
+    <div class="field ${isKnown ? 'hidden' : ''}" id="${id}_newField"><label>新分類名稱</label><input id="${id}_new" value="${esc(!isKnown ? currentValue : '')}"/></div>`;
+}
+function wireCategoryField(id) {
+  $('#' + id).addEventListener('change', () => $('#' + id + '_newField').classList.toggle('hidden', $('#' + id).value !== '__new__'));
+}
+function categoryFieldValue(id) {
+  const sel = $('#' + id).value;
+  return sel === '__new__' ? $('#' + id + '_new').value.trim() : sel;
+}
+
+// ================= 品項專屬 QR Code（掃了直接登記該品項，不需要先選項目） =================
+function itemQrUrl(type, id) {
+  return location.origin + location.pathname + '#/qi/' + type + '/' + encodeURIComponent(id);
+}
+function itemQrImgSrc(type, id, size) {
+  const s = size || 150;
+  return 'https://api.qrserver.com/v1/create-qr-code/?size=' + s + 'x' + s + '&data=' + encodeURIComponent(itemQrUrl(type, id));
+}
+
 // ================= App Shell =================
 const NAV = [
   { href: '#/dashboard', label: '主頁面', icon: '🏠' },
@@ -248,9 +282,9 @@ async function viewFixedList() {
     $('#tableWrap').querySelectorAll('tr[data-id]').forEach(tr => tr.addEventListener('click', () => { location.hash = '#/fixed/' + encodeURIComponent(tr.dataset.id); }));
   }
   function tblRows(list) {
-    return `<table><thead><tr><th>編號</th><th>品項名稱</th><th>總數量</th><th>可借數量</th><th>位置</th><th>狀態</th></tr></thead>
+    return `<table><thead><tr><th>編號</th><th>分類</th><th>品項名稱</th><th>總數量</th><th>可借數量</th><th>位置</th><th>狀態</th></tr></thead>
       <tbody>${list.map(f => `<tr data-id="${esc(f['資產編號'])}">
-        <td>${esc(f['資產編號'])}</td><td>${esc(f['品項名稱'])}</td><td>${esc(f['總數量'])}</td>
+        <td>${esc(f['資產編號'])}</td><td>${esc(f['分類'] || '-')}</td><td>${esc(f['品項名稱'])}</td><td>${esc(f['總數量'])}</td>
         <td>${esc(f['目前可借數量'])}</td><td>${esc(f['位置備註'])}</td><td>${statusBadge(f['目前狀態'])}</td></tr>`).join('')}</tbody></table>`;
   }
   draw(data);
@@ -261,10 +295,13 @@ async function viewFixedList() {
   $('#addBtn').addEventListener('click', () => openFixedForm());
 }
 
-function openFixedForm(existing) {
+async function openFixedForm(existing) {
   const isEdit = !!existing;
+  const categories = await fetchCategories('FIXED');
   openModal(`
     <h3>${isEdit ? '編輯固定資產' : '新增固定資產'}</h3>
+    ${isEdit ? `<p style="color:var(--muted);font-size:12.5px;margin-top:-8px">編號：${esc(existing['資產編號'])}（編號一經建立不會變動）</p>` : `<p style="color:var(--muted);font-size:12.5px;margin-top:-8px">選好分類後，編號會自動產生，不用手動輸入</p>`}
+    ${categoryFieldHtml('f_category', categories, existing ? existing['分類'] : '')}
     <div class="field"><label>品項名稱</label><input id="f_name" value="${esc(existing ? existing['品項名稱'] : '')}"/></div>
     <div class="two-col">
       <div class="field"><label>總數量</label><input id="f_total" type="number" min="0" value="${existing ? existing['總數量'] : 1}"/></div>
@@ -280,15 +317,21 @@ function openFixedForm(existing) {
       <button class="btn btn-ghost" id="cancelBtn">取消</button>
       <button class="btn btn-primary" id="saveBtn">儲存</button>
     </div>`);
+  wireCategoryField('f_category');
   $('#cancelBtn').addEventListener('click', closeModal);
   $('#saveBtn').addEventListener('click', async () => {
-    const payload = { name: $('#f_name').value.trim(), total: Number($('#f_total').value), available: Number($('#f_avail').value), location: $('#f_loc').value.trim(), status: $('#f_status').value };
+    const category = categoryFieldValue('f_category');
+    const payload = { name: $('#f_name').value.trim(), category, total: Number($('#f_total').value), available: Number($('#f_avail').value), location: $('#f_loc').value.trim(), status: $('#f_status').value };
     if (!payload.name) { toast('請輸入品項名稱', 'error'); return; }
+    if (!category) { toast('請選擇或輸入分類', 'error'); return; }
+    $('#saveBtn').disabled = true;
     try {
-      if (isEdit) { payload.id = existing['資產編號']; await Api.updateFixedAsset(payload); }
-      else { await Api.addFixedAsset(payload); }
-      closeModal(); toast('已儲存', 'success'); viewFixedList();
-    } catch (e) { toast(e.message, 'error'); }
+      let id;
+      if (isEdit) { payload.id = existing['資產編號']; await Api.updateFixedAsset(payload); id = payload.id; }
+      else { const r = await Api.addFixedAsset(payload); id = r.id; }
+      closeModal(); toast('已儲存', 'success');
+      if (isEdit) viewFixedDetail(id); else viewFixedList();
+    } catch (e) { toast(e.message, 'error'); $('#saveBtn').disabled = false; }
   });
 }
 
@@ -301,7 +344,7 @@ async function viewFixedDetail(id) {
     <a class="back-link" href="#/fixed">← 返回固定資產列表</a>
     <div class="panel">
       <div class="toolbar">
-        <h3 style="margin:0">${esc(a['品項名稱'])} <span style="color:var(--muted);font-weight:400;font-size:13px">（${esc(a['資產編號'])}）</span></h3>
+        <h3 style="margin:0">${esc(a['品項名稱'])} <span style="color:var(--muted);font-weight:400;font-size:13px">（${esc(a['資產編號'])} · ${esc(a['分類'] || '未分類')}）</span></h3>
         <div class="row-actions">
           <button class="btn btn-ghost btn-sm" id="editBtn">編輯</button>
           <button class="btn btn-danger btn-sm" id="delBtn">刪除</button>
@@ -322,6 +365,11 @@ async function viewFixedDetail(id) {
           <button class="btn btn-ghost btn-sm" data-act="維修完成">維修完成</button>
         </div>
       </div>
+    </div>
+    <div class="panel">
+      <h3>📷 此設備專屬 QR Code</h3>
+      <p style="color:var(--muted);font-size:12.5px">貼在設備本體上，同仁掃描後可直接登記這項設備的借出／歸還，不用先選項目。</p>
+      <div class="qrcode-box"><img src="${itemQrImgSrc('fixed', a['資產編號'], 150)}" width="150" height="150"/></div>
     </div>
     <div class="panel">
       <h3>租借歸還／採購／損壞紀錄</h3>
@@ -378,10 +426,10 @@ async function viewConsList() {
       <div id="tableWrap"></div>
     </div>`;
   function draw(list) {
-    $('#tableWrap').innerHTML = list.length ? `<table><thead><tr><th>編號</th><th>品項名稱</th><th>剩餘數量</th><th>安全值</th><th>位置</th><th>狀態</th></tr></thead>
+    $('#tableWrap').innerHTML = list.length ? `<table><thead><tr><th>編號</th><th>分類</th><th>品項名稱</th><th>剩餘數量</th><th>安全值</th><th>位置</th><th>狀態</th></tr></thead>
       <tbody>${list.map(c => {
         const low = Number(c['目前剩餘數量']) <= Number(c['警告安全數量']);
-        return `<tr data-id="${esc(c['資產編號'])}"><td>${esc(c['資產編號'])}</td><td>${esc(c['品項名稱'])}</td><td>${esc(c['目前剩餘數量'])}</td><td>${esc(c['警告安全數量'])}</td><td>${esc(c['位置備註'])}</td><td>${low ? '<span class="badge danger">庫存不足</span>' : '<span class="badge ok">正常</span>'}</td></tr>`;
+        return `<tr data-id="${esc(c['資產編號'])}"><td>${esc(c['資產編號'])}</td><td>${esc(c['分類'] || '-')}</td><td>${esc(c['品項名稱'])}</td><td>${esc(c['目前剩餘數量'])}</td><td>${esc(c['警告安全數量'])}</td><td>${esc(c['位置備註'])}</td><td>${low ? '<span class="badge danger">庫存不足</span>' : '<span class="badge ok">正常</span>'}</td></tr>`;
       }).join('')}</tbody></table>` : `<div class="empty">尚無資料，點選右上角新增</div>`;
     $('#tableWrap').querySelectorAll('tr[data-id]').forEach(tr => tr.addEventListener('click', () => { location.hash = '#/cons/' + encodeURIComponent(tr.dataset.id); }));
   }
@@ -390,10 +438,13 @@ async function viewConsList() {
   $('#addBtn').addEventListener('click', () => openConsForm());
 }
 
-function openConsForm(existing) {
+async function openConsForm(existing) {
   const isEdit = !!existing;
+  const categories = await fetchCategories('CONS');
   openModal(`
     <h3>${isEdit ? '編輯銷耗資產' : '新增銷耗資產'}</h3>
+    ${isEdit ? `<p style="color:var(--muted);font-size:12.5px;margin-top:-8px">編號：${esc(existing['資產編號'])}（編號一經建立不會變動）</p>` : `<p style="color:var(--muted);font-size:12.5px;margin-top:-8px">選好分類後，編號會自動產生，不用手動輸入</p>`}
+    ${categoryFieldHtml('c_category', categories, existing ? existing['分類'] : '')}
     <div class="field"><label>品項名稱</label><input id="c_name" value="${esc(existing ? existing['品項名稱'] : '')}"/></div>
     <div class="two-col">
       <div class="field"><label>目前剩餘數量</label><input id="c_qty" type="number" min="0" value="${existing ? existing['目前剩餘數量'] : 0}"/></div>
@@ -404,15 +455,21 @@ function openConsForm(existing) {
       <button class="btn btn-ghost" id="cancelBtn">取消</button>
       <button class="btn btn-primary" id="saveBtn">儲存</button>
     </div>`);
+  wireCategoryField('c_category');
   $('#cancelBtn').addEventListener('click', closeModal);
   $('#saveBtn').addEventListener('click', async () => {
-    const payload = { name: $('#c_name').value.trim(), qty: Number($('#c_qty').value), warnQty: Number($('#c_warn').value), location: $('#c_loc').value.trim() };
+    const category = categoryFieldValue('c_category');
+    const payload = { name: $('#c_name').value.trim(), category, qty: Number($('#c_qty').value), warnQty: Number($('#c_warn').value), location: $('#c_loc').value.trim() };
     if (!payload.name) { toast('請輸入品項名稱', 'error'); return; }
+    if (!category) { toast('請選擇或輸入分類', 'error'); return; }
+    $('#saveBtn').disabled = true;
     try {
-      if (isEdit) { payload.id = existing['資產編號']; await Api.updateConsumable(payload); }
-      else { await Api.addConsumable(payload); }
-      closeModal(); toast('已儲存', 'success'); viewConsList();
-    } catch (e) { toast(e.message, 'error'); }
+      let id;
+      if (isEdit) { payload.id = existing['資產編號']; await Api.updateConsumable(payload); id = payload.id; }
+      else { const r = await Api.addConsumable(payload); id = r.id; }
+      closeModal(); toast('已儲存', 'success');
+      if (isEdit) viewConsDetail(id); else viewConsList();
+    } catch (e) { toast(e.message, 'error'); $('#saveBtn').disabled = false; }
   });
 }
 
@@ -426,7 +483,7 @@ async function viewConsDetail(id) {
     <a class="back-link" href="#/cons">← 返回銷耗資產列表</a>
     <div class="panel">
       <div class="toolbar">
-        <h3 style="margin:0">${esc(item['品項名稱'])} <span style="color:var(--muted);font-weight:400;font-size:13px">（${esc(item['資產編號'])}）</span></h3>
+        <h3 style="margin:0">${esc(item['品項名稱'])} <span style="color:var(--muted);font-weight:400;font-size:13px">（${esc(item['資產編號'])} · ${esc(item['分類'] || '未分類')}）</span></h3>
         <div class="row-actions">
           <button class="btn btn-ghost btn-sm" id="editBtn">編輯</button>
           <button class="btn btn-danger btn-sm" id="delBtn">刪除</button>
@@ -446,8 +503,13 @@ async function viewConsDetail(id) {
       </div>
     </div>
     <div class="panel">
+      <h3>📷 此品項專屬 QR Code</h3>
+      <p style="color:var(--muted);font-size:12.5px">貼在耗材架上，同仁掃描後可直接登記這項耗材的補充／出庫數量，不用先選項目。</p>
+      <div class="qrcode-box"><img src="${itemQrImgSrc('cons', item['資產編號'], 150)}" width="150" height="150"/></div>
+    </div>
+    <div class="panel">
       <h3>補充／出庫紀錄</h3>
-      ${logs.length ? logs.map(l => `<div class="log-item"><div><b>${esc(l['動作'])}</b>　${esc(l['經辦人'])}　數量：${esc(l['異動數量'])}　${esc(l['備註'] || '')}
+      ${logs.length ? logs.map(l => `<div class="log-item"><div><b>${esc(l['動作'])}</b>　數量：${esc(l['異動數量'])}　${esc(l['備註'] || '')}
         <div class="meta">${fmtDate(l['時間戳記'])}</div></div></div>`).join('') : `<div class="empty">尚無紀錄</div>`}
     </div>`;
   $('#editBtn').addEventListener('click', () => openConsForm(item));
@@ -455,20 +517,16 @@ async function viewConsDetail(id) {
     if (!confirm('確定要刪除此銷耗資產嗎？')) return;
     await guard(Api.deleteConsumable(item['資產編號'])); toast('已刪除', 'success'); location.hash = '#/cons';
   });
-  $('#content').querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', async () => {
+  $('#content').querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', () => {
     openModal(`
       <h3>${btn.dataset.act}：${esc(item['品項名稱'])}</h3>
-      ${unitPersonFieldsHtml('a', '單位', '經辦人')}
       <div class="field"><label>數量</label><input id="a_qty" type="number" min="1" value="1"/></div>
       <div class="field"><label>備註</label><input id="a_note"/></div>
       <div class="modal-actions"><button class="btn btn-ghost" id="cancelBtn">取消</button><button class="btn btn-primary" id="okBtn">確認</button></div>`);
-    const { personCtrl } = await wireUnitPersonFields('a');
     $('#cancelBtn').addEventListener('click', closeModal);
     $('#okBtn').addEventListener('click', async () => {
-      const person = personCtrl.getValue();
-      if (!person) { toast('請先選單位，再從清單點選經辦人姓名', 'error'); return; }
       try {
-        await Api.consumableAction({ id: item['資產編號'], action: btn.dataset.act, qty: Number($('#a_qty').value), person, note: $('#a_note').value.trim() });
+        await Api.consumableAction({ id: item['資產編號'], action: btn.dataset.act, qty: Number($('#a_qty').value), note: $('#a_note').value.trim() });
         closeModal(); toast('已登記', 'success'); viewConsDetail(item['資產編號']);
       } catch (e) { toast(e.message, 'error'); }
     });
@@ -569,8 +627,8 @@ async function viewSettings() {
       <button class="btn btn-primary" id="saveBtn">儲存設定</button>
     </div>
     <div class="panel" style="max-width:480px">
-      <h3>📷 QR Code 掃碼登記入口</h3>
-      <p style="color:var(--muted);font-size:12.5px">列印以下 QR Code 貼在倉庫，同仁用手機掃描即可登記固定資產租借歸還／銷耗資產領用，不需要登入帳號。</p>
+      <h3>📷 通用 QR Code 掃碼登記入口</h3>
+      <p style="color:var(--muted);font-size:12.5px">列印以下 QR Code 貼在倉庫門口，同仁掃描後可自行選擇要登記固定資產或銷耗資產、選項目，可以連續加入多個品項後一次送出。每個品項詳情頁裡也有「該品項專屬」的 QR Code，貼在設備/耗材本體上，掃了直接知道是哪個品項，一樣可以連續掃多個之後一次送出。</p>
       <div class="qrcode-box"><img id="qrImg" width="180" height="180"/></div>
       <p style="margin-top:10px"><a href="#/qr" target="_blank">${location.origin + location.pathname}#/qr</a></p>
     </div>
@@ -620,6 +678,7 @@ const REPORT_TYPES = [
   { key: 'consTotal', label: '銷耗資產各項總量' },
   { key: 'purchase', label: '待採購表單（品項與建議採購數量）' },
   { key: 'repair', label: '待維修表單（固定資產損壞數量）' },
+  { key: 'catalog', label: '設備總表（分類／編號／QR連結，可直接列印）' },
 ];
 
 function viewReports() {
@@ -638,7 +697,11 @@ async function downloadReport(type) {
     const wb = XLSX.utils.book_new();
     const sheets = res.data;
     Object.keys(sheets).forEach(name => {
-      const rows = sheets[name];
+      let rows = sheets[name];
+      if (type === 'catalog' && rows.length) {
+        const qrType = name.indexOf('固定') !== -1 ? 'fixed' : 'cons';
+        rows = rows.map(r => Object.assign({}, r, { QR連結: itemQrUrl(qrType, r['資產編號']) }));
+      }
       const ws = rows.length ? XLSX.utils.json_to_sheet(rows) : XLSX.utils.aoa_to_sheet([['（無資料）']]);
       XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
     });
@@ -648,21 +711,21 @@ async function downloadReport(type) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-// ================= QR 掃碼登記流程（免登入，手機優先） =================
-let qrState = { person: null, entries: [], init: null };
-
-async function viewQr() {
-  document.body.innerHTML = `<div class="qr-page"><div class="qr-container" id="qrRoot"></div></div>`;
-  qrState = { person: null, entries: [], init: null };
-  try { qrState.init = (await Api.qrInit()).data; }
-  catch (e) {
-    // 未登入時 API 需要 token；為了讓 QR 免登入使用，改走匿名 fetch
-    qrState.init = await anonQrInit();
-  }
-  qrStepPerson();
+// ================= QR 掃碼登記流程（免登入，手機優先，購物車模式） =================
+// 兩種入口都共用同一個購物車：
+//   1) 通用入口 #/qr：先選類型與品項，選數量後「加入清單」，可連續加入多筆
+//   2) 品項專屬入口 #/qi/fixed|cons/編號：品項已經固定，選數量後「加入清單」，可以連續掃下一個品項的 QR
+// 全部加完之後，到清單頁一次送出；固定資產需要選經辦人，銷耗資產不需要（只記錄數量與時間）。
+const QR_CART_KEY = 'ems_qr_cart';
+function qrCartLoad() {
+  try { const c = JSON.parse(localStorage.getItem(QR_CART_KEY) || 'null'); return (c && Array.isArray(c.entries)) ? c : { entries: [] }; }
+  catch (e) { return { entries: [] }; }
 }
+function qrCartSave(cart) { localStorage.setItem(QR_CART_KEY, JSON.stringify(cart)); }
+function qrCartClear() { localStorage.removeItem(QR_CART_KEY); }
+function qrCartAdd(entry) { const c = qrCartLoad(); c.entries.push(entry); qrCartSave(c); return c; }
 
-// QR 入口不需要登入，直接匿名呼叫後端（doPost 對 qrInit/qrSubmit 也允許無 session, 由後端邏輯決定）
+// QR 入口不需要登入，直接匿名呼叫後端（doPost 對 qrInit/qrSubmit 白名單放行，無需 session）
 async function anonQrInit() {
   const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'qrInit', token: 'anonymous', payload: {} }) });
   const j = await res.json();
@@ -676,79 +739,51 @@ async function anonCall(action, payload) {
   return j;
 }
 
-function qrShell(stepIdx, innerHtml) {
-  $('#qrRoot').innerHTML = `
-    <div style="text-align:center;margin:14px 0 20px"><div class="login-mark" style="margin:0 auto 8px">EM</div><div style="font-weight:700">設備借還／領用登記</div></div>
-    <div class="progress-dots">${[0, 1, 2].map(i => `<span class="${i === stepIdx ? 'active' : ''}"></span>`).join('')}</div>
-    <div class="qr-step">${innerHtml}</div>`;
+function qrPageShell(title) {
+  const cart = qrCartLoad();
+  document.body.innerHTML = `<div class="qr-page"><div class="qr-container" id="qrRoot">
+    <div style="text-align:center;margin:14px 0 16px"><div class="login-mark" style="margin:0 auto 8px">EM</div><div style="font-weight:700">${esc(title)}</div></div>
+    ${cart.entries.length ? `<a href="#/qr-cart" style="text-decoration:none"><div class="qr-entry" style="margin-bottom:14px;justify-content:center"><div>🛒 清單目前有 <b>${cart.entries.length}</b> 項，點此查看／送出</div></div></a>` : ''}
+    <div class="qr-step" id="qrStepArea"><div class="empty">載入中...</div></div>
+  </div></div>`;
 }
+function qrSetStep(html) { const el = document.getElementById('qrStepArea'); if (el) el.innerHTML = html; }
 
-function qrStepPerson() {
-  const staff = qrState.init.staff || []; // [{unit,name}]
-  qrShell(0, `
-    <h3 style="margin-top:0">請選擇你的單位與姓名</h3>
-    ${unitPersonFieldsHtml('qr', '單位', '姓名')}
-    <button class="btn btn-primary btn-block" id="nextBtn" style="margin-top:6px">下一步</button>`);
-  const { personCtrl } = wireUnitPersonFieldsQR('qr', staff);
-  $('#nextBtn').addEventListener('click', () => {
-    const v = personCtrl.getValue();
-    if (!v) { toast('請先選單位，再從清單點選你的姓名', 'error'); return; }
-    qrState.person = v;
-    qrStepType();
-  });
-}
-
-function qrStepType() {
-  qrShell(1, `
-    <h3 style="margin-top:0">${esc(qrState.person)}，你好！請選擇要登記的類型</h3>
+// ---------- 入口 1：通用 QR（先選類型與品項） ----------
+async function viewQr() {
+  qrPageShell('掃碼登記');
+  let init;
+  try { init = await anonQrInit(); } catch (e) { qrSetStep(`<div class="empty">${esc(e.message)}</div>`); return; }
+  qrSetStep(`
+    <h3 style="margin-top:0">請選擇要登記的類型</h3>
     <div class="pill-choice">
-      <button class="btn btn-primary" id="fixedBtn">固定資產（借還）</button>
-      <button class="btn btn-ghost" id="consBtn">銷耗資產（領用）</button>
+      <button class="btn btn-primary" id="fixedBtn">📦 固定資產（借還）</button>
+      <button class="btn btn-ghost" id="consBtn">🧯 銷耗資產（補充／出庫）</button>
     </div>
-    <div id="entryList" style="margin-top:16px"></div>
-    <div class="modal-actions" style="justify-content:space-between">
-      <button class="btn btn-ghost btn-sm" id="backBtn">上一步</button>
-      <button class="btn btn-primary" id="submitBtn">完成並送出</button>
-    </div>`);
-  renderEntryList();
-  $('#backBtn').addEventListener('click', qrStepPerson);
-  $('#fixedBtn').addEventListener('click', () => openQrEntryForm('fixed'));
-  $('#consBtn').addEventListener('click', () => openQrEntryForm('cons'));
-  $('#submitBtn').addEventListener('click', submitQr);
+    <p style="color:var(--muted);font-size:12.5px;margin-top:14px">可以連續加入多個品項，最後再一次送出。</p>`);
+  $('#fixedBtn').addEventListener('click', () => openQrItemPicker('fixed', init));
+  $('#consBtn').addEventListener('click', () => openQrItemPicker('cons', init));
 }
 
-function renderEntryList() {
-  const el = $('#entryList');
-  if (!el) return;
-  el.innerHTML = qrState.entries.length ? qrState.entries.map((e, i) => `
-    <div class="qr-entry"><div>
-        ${e.type === 'fixed' ? '📦' : '🧯'} <b>${esc(e.isNew ? e.newName : nameOf(e))}</b>
-        ${e.type === 'fixed' ? `　${esc(e.action)}${e.date ? '　' + esc(e.date) : ''}` : `　數量：${esc(e.qty)}`}
-      </div><button class="btn btn-danger btn-sm" data-i="${i}">移除</button></div>`).join('')
-    : `<div class="empty">尚未加入任何項目</div>`;
-  el.querySelectorAll('[data-i]').forEach(b => b.addEventListener('click', () => { qrState.entries.splice(Number(b.dataset.i), 1); renderEntryList(); }));
-}
-function nameOf(e) {
-  const list = e.type === 'fixed' ? qrState.init.fixed : qrState.init.cons;
-  const f = list.find(x => x.id === e.id);
-  return f ? f.name : e.id;
-}
-
-function openQrEntryForm(type) {
-  const list = type === 'fixed' ? qrState.init.fixed : qrState.init.cons;
+function openQrItemPicker(type, init) {
+  const list = type === 'fixed' ? init.fixed : init.cons;
   const options = list.map(x => ({ value: x.id, label: x.name }));
   openModal(`
     <h3>${type === 'fixed' ? '新增固定資產登記' : '新增銷耗資產登記'}</h3>
-    <div class="field"><label>設備項目</label>${searchableSelectHtml('qi_item', '輸入搜尋，找不到就直接打新名稱新增')}</div>
+    <div class="field"><label>設備項目</label>${searchableSelectHtml('qp_item', '輸入搜尋，找不到就直接打新名稱新增')}</div>
     ${type === 'fixed' ? `
-      <div class="field"><label>動作</label><select id="actionSel"><option value="借出">借出</option><option value="歸還">歸還</option></select></div>
-      <div class="field"><label id="dateLabel">預計歸還日期</label><input id="dateInput" type="date"/></div>
-      <div class="field"><label>備註（租借原因等）</label><input id="noteInput"/></div>`
-      : `<div class="field"><label>取出數量</label><input id="qtyInput" type="number" min="1" value="1"/></div>`}
+      <div class="field"><label>動作</label><select id="qp_action"><option value="借出">借出</option><option value="歸還">歸還</option></select></div>
+      <div class="field"><label>數量</label><input id="qp_qty" type="number" min="1" value="1"/></div>
+      <div class="field"><label id="qp_dateLabel">預計歸還日期</label><input id="qp_date" type="date"/></div>
+      <div class="field"><label>備註（租借原因等）</label><input id="qp_note"/></div>`
+      : `
+      <div class="field"><label>動作</label><select id="qp_action"><option value="出庫">出庫（領用）</option><option value="補充">補充（入庫）</option></select></div>
+      <div class="field"><label>數量</label><input id="qp_qty" type="number" min="1" value="1"/></div>
+      <div class="field"><label>備註</label><input id="qp_note"/></div>`}
     <div class="modal-actions"><button class="btn btn-ghost" id="cancelBtn">取消</button><button class="btn btn-primary" id="addBtn">加入清單</button></div>`);
-  const itemCtrl = initSearchableSelect('qi_item', options);
+  const itemCtrl = initSearchableSelect('qp_item', options);
   if (type === 'fixed') {
-    $('#actionSel').addEventListener('change', () => { $('#dateLabel').textContent = $('#actionSel').value === '借出' ? '預計歸還日期' : '實際歸還日期'; });
+    $('#qp_action').addEventListener('change', () => { $('#qp_dateLabel').textContent = $('#qp_action').value === '借出' ? '預計歸還日期' : '實際歸還日期'; });
   }
   $('#cancelBtn').addEventListener('click', closeModal);
   $('#addBtn').addEventListener('click', () => {
@@ -756,39 +791,122 @@ function openQrEntryForm(type) {
     const typedText = itemCtrl.getText();
     const isNew = !id;
     if (!typedText) { toast('請輸入或選擇設備項目', 'error'); return; }
-    const newName = isNew ? typedText : '';
-    if (type === 'fixed') {
-      qrState.entries.push({ type: 'fixed', id: isNew ? null : id, isNew, newName, action: $('#actionSel').value, date: $('#dateInput').value, note: $('#noteInput').value.trim() });
-    } else {
-      const qty = Number($('#qtyInput').value || 1);
-      qrState.entries.push({ type: 'cons', id: isNew ? null : id, isNew, newName, qty });
-    }
-    closeModal(); renderEntryList();
+    const entry = {
+      type, id: isNew ? null : id, isNew, newName: isNew ? typedText : '', name: typedText,
+      action: $('#qp_action').value, qty: Number($('#qp_qty').value || 1),
+      date: type === 'fixed' ? $('#qp_date').value : '',
+      note: $('#qp_note').value.trim(),
+    };
+    qrCartAdd(entry);
+    closeModal(); toast('已加入清單', 'success');
+    viewQr();
   });
 }
 
-async function submitQr() {
-  if (!qrState.entries.length) { toast('請至少加入一項登記', 'error'); return; }
-  qrShell(2, `<div class="empty">送出中，請稍候...</div>`);
-  try {
-    await anonCall('qrSubmit', { person: qrState.person, entries: qrState.entries });
-    qrShell(2, `<div style="text-align:center;padding:20px 0">
-      <div style="font-size:40px;margin-bottom:10px">✅</div>
-      <h3>登記完成！</h3>
-      <p style="color:var(--muted)">感謝 ${esc(qrState.person)} 的登記，資料已同步更新。</p>
-      <button class="btn btn-primary btn-block" id="againBtn">再登記一筆</button>
-    </div>`);
-    $('#againBtn').addEventListener('click', viewQr);
-  } catch (e) {
-    toast(e.message, 'error');
-    qrStepType();
+// ---------- 入口 2：品項專屬 QR（品項已固定，只需選數量／動作） ----------
+async function viewQrItem(type, id) {
+  qrPageShell('設備登記');
+  let init;
+  try { init = await anonQrInit(); } catch (e) { qrSetStep(`<div class="empty">${esc(e.message)}</div>`); return; }
+  const list = type === 'fixed' ? init.fixed : init.cons;
+  const item = list.find(x => x.id === id);
+  if (!item) { qrSetStep(`<div class="empty">找不到此品項，QR Code 可能已失效，請聯絡管理員</div>`); return; }
+  qrSetStep(`
+    <div class="qr-entry" style="margin-bottom:14px"><div>${type === 'fixed' ? '📦' : '🧯'} <b>${esc(item.name)}</b><div class="meta">${esc(item.category || '')}　${esc(item.id)}</div></div></div>
+    ${type === 'fixed' ? `
+      <div class="field"><label>動作</label><select id="qi_action"><option value="借出">借出</option><option value="歸還">歸還</option></select></div>
+      <div class="field"><label>數量</label><input id="qi_qty" type="number" min="1" value="1"/></div>
+      <div class="field"><label id="qi_dateLabel">預計歸還日期</label><input id="qi_date" type="date"/></div>
+      <div class="field"><label>備註（租借原因等）</label><input id="qi_note"/></div>`
+      : `
+      <div class="field"><label>動作</label><select id="qi_action"><option value="出庫">出庫（領用）</option><option value="補充">補充（入庫）</option></select></div>
+      <div class="field"><label>數量</label><input id="qi_qty" type="number" min="1" value="1"/></div>
+      <div class="field"><label>備註</label><input id="qi_note"/></div>`}
+    <button class="btn btn-primary btn-block" id="addBtn" style="margin-top:6px">加入清單</button>
+    <p style="text-align:center;color:var(--muted);font-size:12px;margin-top:10px">加入後可以繼續掃下一個品項的 QR Code，全部掃完再一次送出</p>`);
+  if (type === 'fixed') {
+    $('#qi_action').addEventListener('change', () => { $('#qi_dateLabel').textContent = $('#qi_action').value === '借出' ? '預計歸還日期' : '實際歸還日期'; });
   }
+  $('#addBtn').addEventListener('click', () => {
+    const entry = {
+      type, id: item.id, isNew: false, name: item.name,
+      action: $('#qi_action').value, qty: Number($('#qi_qty').value || 1),
+      date: type === 'fixed' ? $('#qi_date').value : '',
+      note: $('#qi_note').value.trim(),
+    };
+    qrCartAdd(entry);
+    const count = qrCartLoad().entries.length;
+    qrSetStep(`
+      <div style="text-align:center;padding:10px 0">
+        <div style="font-size:36px;margin-bottom:8px">✅</div>
+        <h3>已加入清單</h3>
+        <p style="color:var(--muted)">請繼續掃描下一個品項的 QR Code，或點下方查看清單並送出。</p>
+        <a href="#/qr-cart" class="btn btn-primary btn-block" style="text-decoration:none;display:block;margin-top:14px">查看清單並送出（${count} 項）</a>
+      </div>`);
+  });
+}
+
+// ---------- 清單確認與送出 ----------
+async function viewQrCart() {
+  qrPageShell('確認清單');
+  renderQrCart();
+}
+
+function renderQrCart() {
+  const cart = qrCartLoad();
+  const hasFixed = cart.entries.some(e => e.type === 'fixed');
+  qrSetStep(`
+    <div id="qrCartList">${cart.entries.length ? cart.entries.map((e, i) => `
+      <div class="qr-entry"><div>
+        ${e.type === 'fixed' ? '📦' : '🧯'} <b>${esc(e.isNew ? e.newName : e.name)}</b>
+        　${esc(e.action)}　數量：${esc(e.qty)}${e.date ? '　' + esc(e.date) : ''}
+      </div><button class="btn btn-danger btn-sm" data-i="${i}">移除</button></div>`).join('')
+      : `<div class="empty">清單是空的，請先掃描品項 QR Code，或從掃碼入口新增</div>`}</div>
+    ${hasFixed ? `<div style="margin-top:14px"><h3 style="margin:0 0 10px">固定資產需要選擇經辦人</h3>${unitPersonFieldsHtml('qc', '單位', '姓名')}</div>` : ''}
+    <div class="modal-actions" style="justify-content:space-between;margin-top:16px">
+      <button class="btn btn-ghost btn-sm" id="clearBtn">清空清單</button>
+      <button class="btn btn-primary" id="submitBtn" ${cart.entries.length ? '' : 'disabled'}>確認送出</button>
+    </div>`);
+  document.querySelectorAll('#qrCartList [data-i]').forEach(b => b.addEventListener('click', () => {
+    const c = qrCartLoad(); c.entries.splice(Number(b.dataset.i), 1); qrCartSave(c); renderQrCart();
+  }));
+  $('#clearBtn').addEventListener('click', () => { if (confirm('確定要清空整個清單嗎？')) { qrCartClear(); renderQrCart(); } });
+
+  let personCtrl = null;
+  if (hasFixed) {
+    anonQrInit().then(init => { const w = wireUnitPersonFieldsQR('qc', init.staff || []); personCtrl = w.personCtrl; }).catch(() => {});
+  }
+  $('#submitBtn').addEventListener('click', async () => {
+    if (!cart.entries.length) return;
+    const person = hasFixed ? (personCtrl ? personCtrl.getValue() : '') : '';
+    if (hasFixed && !person) { toast('請先選單位，再從清單點選經辦人姓名', 'error'); return; }
+    $('#submitBtn').disabled = true; $('#submitBtn').textContent = '送出中...';
+    try {
+      await anonCall('qrSubmit', { person, entries: cart.entries });
+      qrCartClear();
+      qrSetStep(`<div style="text-align:center;padding:20px 0">
+        <div style="font-size:40px;margin-bottom:10px">✅</div>
+        <h3>登記完成！</h3>
+        <p style="color:var(--muted)">資料已同步更新，感謝你的登記。</p>
+        <a href="#/qr" class="btn btn-primary btn-block" style="text-decoration:none;display:block;margin-top:14px">再次掃碼登記</a>
+      </div>`);
+    } catch (e) {
+      toast(e.message, 'error');
+      $('#submitBtn').disabled = false; $('#submitBtn').textContent = '確認送出';
+    }
+  });
 }
 
 // ================= 路由 =================
 async function router() {
   const hash = location.hash || '#/dashboard';
 
+  if (hash.startsWith('#/qi/')) {
+    const parts = hash.replace('#/qi/', '').split('/');
+    await viewQrItem(parts[0], decodeURIComponent(parts[1] || ''));
+    return;
+  }
+  if (hash === '#/qr-cart') { await viewQrCart(); return; }
   if (hash.startsWith('#/qr')) { await viewQr(); return; }
 
   if (hash === '#/login' || !Api.token()) {
