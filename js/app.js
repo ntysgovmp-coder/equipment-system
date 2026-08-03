@@ -465,7 +465,7 @@ async function viewFixedDetail(id) {
       <h3>租借歸還／採購／損壞紀錄</h3>
       ${logs.length ? logs.map(l => `<div class="log-item"><div>
           <b>${esc(l['動作'])}</b>　${esc(l['經辦人'])}　數量：${esc(l['數量'])}　${esc(l['備註'] || '')}
-          <div class="meta">${fmtDate(l['時間戳記'])} ${l['預計歸還時間'] ? '｜預計歸還：' + esc(l['預計歸還時間']) : ''} ${l['實際歸還時間'] ? '｜實際歸還：' + esc(l['實際歸還時間']) : ''}</div>
+          <div class="meta">${fmtDate(l['時間戳記'])} ${l['預計歸還時間'] ? (l['動作'] === '借出' ? '｜租借日：' : '｜預計歸還：') + esc(l['預計歸還時間']) : ''} ${l['實際歸還時間'] ? '｜實際歸還：' + esc(l['實際歸還時間']) : ''}</div>
         </div></div>`).join('') : `<div class="empty">尚無紀錄</div>`}
     </div>`;
   $('#editBtn').addEventListener('click', () => openFixedForm(a));
@@ -480,11 +480,12 @@ async function viewFixedDetail(id) {
 async function openFixedActionForm(asset, action) {
   const needsQty = action === '採購';
   const needsDate = action === '借出' || action === '歸還';
+  const today = new Date().toISOString().slice(0, 10);
   openModal(`
     <h3>${action}：${esc(asset['品項名稱'])}</h3>
     ${unitPersonFieldsHtml('a', '單位', '經辦人 / 借用人')}
     ${needsQty ? `<div class="field"><label>數量</label><input id="a_qty" type="number" min="1" value="1"/></div>` : ''}
-    ${needsDate ? `<div class="field"><label>${action === '借出' ? '預計歸還日期' : '實際歸還日期'}</label><input id="a_date" type="date"/></div>` : ''}
+    ${needsDate ? `<div class="field"><label>${action === '借出' ? '租借日' : '實際歸還日期'}</label><input id="a_date" type="date" value="${today}"/></div>` : ''}
     <div class="field"><label>備註</label><input id="a_note" placeholder="租借原因等"/></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelBtn">取消</button>
@@ -937,13 +938,14 @@ async function viewQr() {
 function openQrItemPicker(type, init) {
   const list = type === 'fixed' ? init.fixed : init.cons;
   const options = list.map(x => ({ value: x.id, label: x.name }));
+  const today = new Date().toISOString().slice(0, 10);
   openModal(`
     <h3>${type === 'fixed' ? '新增固定資產登記' : '新增銷耗資產登記'}</h3>
     <div class="field"><label>設備項目</label>${searchableSelectHtml('qp_item', '輸入搜尋，找不到就直接打新名稱新增')}</div>
     ${type === 'fixed' ? `
       <div class="field"><label>動作</label><select id="qp_action"><option value="借出">借出</option><option value="歸還">歸還</option></select></div>
       <div class="field"><label>數量</label><input id="qp_qty" type="number" min="1" value="1"/></div>
-      <div class="field"><label id="qp_dateLabel">預計歸還日期</label><input id="qp_date" type="date"/></div>
+      <div class="field"><label id="qp_dateLabel">租借日</label><input id="qp_date" type="date" value="${today}"/></div>
       <div class="field"><label>備註（租借原因等）</label><input id="qp_note"/></div>`
       : `
       <div class="field"><label>動作</label><select id="qp_action"><option value="出庫">出庫（領用）</option><option value="補充">補充（入庫）</option></select></div>
@@ -952,7 +954,7 @@ function openQrItemPicker(type, init) {
     <div class="modal-actions"><button class="btn btn-ghost" id="cancelBtn">取消</button><button class="btn btn-primary" id="addBtn">加入清單</button></div>`);
   const itemCtrl = initSearchableSelect('qp_item', options);
   if (type === 'fixed') {
-    $('#qp_action').addEventListener('change', () => { $('#qp_dateLabel').textContent = $('#qp_action').value === '借出' ? '預計歸還日期' : '實際歸還日期'; });
+    $('#qp_action').addEventListener('change', () => { $('#qp_dateLabel').textContent = $('#qp_action').value === '借出' ? '租借日' : '實際歸還日期'; });
   }
   $('#cancelBtn').addEventListener('click', closeModal);
   $('#addBtn').addEventListener('click', () => {
@@ -980,12 +982,13 @@ async function viewQrItem(type, id) {
   const list = type === 'fixed' ? init.fixed : init.cons;
   const item = list.find(x => x.id === id);
   if (!item) { qrSetStep(`<div class="empty">找不到此品項，QR Code 可能已失效，請聯絡管理員</div>`); return; }
+  const today = new Date().toISOString().slice(0, 10);
   qrSetStep(`
     <div class="qr-entry" style="margin-bottom:14px"><div>${type === 'fixed' ? '📦' : '🧯'} <b>${esc(item.name)}</b><div class="meta">${esc(item.category || '')}　${esc(item.id)}</div></div></div>
     ${type === 'fixed' ? `
       <div class="field"><label>動作</label><select id="qi_action"><option value="借出">借出</option><option value="歸還">歸還</option></select></div>
       <div class="field"><label>數量</label><input id="qi_qty" type="number" min="1" value="1"/></div>
-      <div class="field"><label id="qi_dateLabel">預計歸還日期</label><input id="qi_date" type="date"/></div>
+      <div class="field"><label id="qi_dateLabel">租借日</label><input id="qi_date" type="date" value="${today}"/></div>
       <div class="field"><label>備註（租借原因等）</label><input id="qi_note"/></div>`
       : `
       <div class="field"><label>動作</label><select id="qi_action"><option value="出庫">出庫（領用）</option><option value="補充">補充（入庫）</option></select></div>
@@ -994,7 +997,7 @@ async function viewQrItem(type, id) {
     <button class="btn btn-primary btn-block" id="addBtn" style="margin-top:6px">加入清單</button>
     <p style="text-align:center;color:var(--muted);font-size:12px;margin-top:10px">加入後可以繼續掃下一個品項的 QR Code，全部掃完再一次送出</p>`);
   if (type === 'fixed') {
-    $('#qi_action').addEventListener('change', () => { $('#qi_dateLabel').textContent = $('#qi_action').value === '借出' ? '預計歸還日期' : '實際歸還日期'; });
+    $('#qi_action').addEventListener('change', () => { $('#qi_dateLabel').textContent = $('#qi_action').value === '借出' ? '租借日' : '實際歸還日期'; });
   }
   $('#addBtn').addEventListener('click', () => {
     const entry = {
