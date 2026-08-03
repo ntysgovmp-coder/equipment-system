@@ -173,8 +173,8 @@ function qrSizeControlsValue(prefix) {
   return Math.max(1, cm);
 }
 
-// 品項詳情頁用：本機產生 QR 圖（不受網路服務影響），並綁定「依所選尺寸下載」「開新視窗依尺寸列印」
-async function wireItemQrDownload(imgId, dlId, printId, sizePrefix, type, id, filenamePrefix) {
+// 品項詳情頁用：本機產生 QR 圖（不受網路服務影響），並綁定「依所選尺寸下載」「開新分頁看大圖（可另存）」「開新視窗依尺寸列印」
+async function wireItemQrDownload(imgId, dlId, printId, sizePrefix, type, id, filenamePrefix, openId) {
   let previewDataUrl = null;
   try {
     previewDataUrl = await QRCode.toDataURL(itemQrUrl(type, id), { width: 300, margin: 1 });
@@ -187,30 +187,53 @@ async function wireItemQrDownload(imgId, dlId, printId, sizePrefix, type, id, fi
     document.getElementById(sizePrefix + '_customField').classList.toggle('hidden', sizeSel.value !== 'custom');
   });
 
+  async function genAtSelectedSize() {
+    const cm = qrSizeControlsValue(sizePrefix);
+    const px = Math.max(80, Math.min(2000, Math.round(cm / 2.54 * 300))); // 以 300 dpi 估算，並限制上限避免尺寸過大產生失敗
+    const dataUrl = await QRCode.toDataURL(itemQrUrl(type, id), { width: px, margin: 1 });
+    return { cm, dataUrl };
+  }
+
   const dl = document.getElementById(dlId);
   if (dl) dl.addEventListener('click', async (e) => {
     e.preventDefault();
-    const cm = qrSizeControlsValue(sizePrefix);
-    const px = Math.max(80, Math.round(cm / 2.54 * 300)); // 以 300 dpi 估算下載檔案的像素大小，確保列印清晰
     try {
-      const bigDataUrl = await QRCode.toDataURL(itemQrUrl(type, id), { width: px, margin: 1 });
+      const { cm, dataUrl } = await genAtSelectedSize();
       const a = document.createElement('a');
-      a.href = bigDataUrl;
+      a.href = dataUrl;
       a.download = filenamePrefix + '_QRCode_' + cm + 'cm.png';
       document.body.appendChild(a); a.click(); a.remove();
     } catch (err) { toast('QR Code 產生失敗：' + err.message, 'error'); }
   });
 
+  // 部分手機瀏覽器（尤其 iOS Safari）不支援 <a download>，改用開新分頁顯示大圖，讓使用者長按/右鍵另存
+  const op = document.getElementById(openId);
+  if (op) op.addEventListener('click', async () => {
+    try {
+      const { cm, dataUrl } = await genAtSelectedSize();
+      const w = window.open('');
+      if (!w) { toast('瀏覽器阻擋了開新分頁，請允許彈出視窗後再試一次', 'error'); return; }
+      w.document.write(`<html><head><title>${filenamePrefix} QR Code</title></head>
+        <body style="margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#111;color:#fff;font-family:sans-serif">
+          <img src="${dataUrl}" style="max-width:90vw;max-height:70vh"/>
+          <p style="margin-top:16px;font-size:14px">長按（手機）或右鍵（電腦）圖片，選「儲存圖片」即可下載　｜　實際列印尺寸：${cm} x ${cm} 公分</p>
+        </body></html>`);
+      w.document.close();
+    } catch (err) { toast('QR Code 產生失敗：' + err.message, 'error'); }
+  });
+
   const pr = document.getElementById(printId);
-  if (pr) pr.addEventListener('click', () => {
-    const cm = qrSizeControlsValue(sizePrefix);
-    const src = previewDataUrl || itemQrImgSrc(type, id, 300);
-    const w = window.open('');
-    w.document.write(`<html><head><title>列印 QR Code</title></head><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh">
-      <img src="${src}" style="width:${cm}cm;height:${cm}cm"/>
-    </body></html>`);
-    w.document.close();
-    setTimeout(() => w.print(), 300);
+  if (pr) pr.addEventListener('click', async () => {
+    try {
+      const { cm, dataUrl } = await genAtSelectedSize();
+      const w = window.open('');
+      if (!w) { toast('瀏覽器阻擋了開新視窗，請允許彈出視窗後再試一次', 'error'); return; }
+      w.document.write(`<html><head><title>列印 QR Code</title></head><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh">
+        <img src="${dataUrl}" style="width:${cm}cm;height:${cm}cm"/>
+      </body></html>`);
+      w.document.close();
+      setTimeout(() => w.print(), 300);
+    } catch (err) { toast('QR Code 產生失敗：' + err.message, 'error'); }
   });
 }
 
@@ -433,8 +456,10 @@ async function viewFixedDetail(id) {
       ${qrSizeControlsHtml('fqr')}
       <div class="row-actions" style="margin-top:10px">
         <a id="fqr_dl" class="btn btn-primary btn-sm" href="#" style="text-decoration:none">下載 QR Code 圖片</a>
+        <button class="btn btn-ghost btn-sm" id="fqr_open">開新分頁看大圖（可另存）</button>
         <button class="btn btn-ghost btn-sm" id="fqr_print">開新視窗列印</button>
       </div>
+      <p style="color:var(--muted);font-size:12px;margin-top:8px">如果「下載」按鈕沒反應（常見於手機瀏覽器），改用「開新分頁看大圖」，長按（手機）或右鍵（電腦）圖片選「儲存圖片」即可。</p>
     </div>
     <div class="panel">
       <h3>租借歸還／採購／損壞紀錄</h3>
@@ -449,7 +474,7 @@ async function viewFixedDetail(id) {
     await guard(Api.deleteFixedAsset(a['資產編號'])); toast('已刪除', 'success'); location.hash = '#/fixed';
   });
   $('#content').querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', () => openFixedActionForm(a, btn.dataset.act)));
-  wireItemQrDownload('fqr_img', 'fqr_dl', 'fqr_print', 'fqr', 'fixed', a['資產編號'], a['資產編號']);
+  wireItemQrDownload('fqr_img', 'fqr_dl', 'fqr_print', 'fqr', 'fixed', a['資產編號'], a['資產編號'], 'fqr_open');
 }
 
 async function openFixedActionForm(asset, action) {
@@ -575,8 +600,10 @@ async function viewConsDetail(id) {
       ${qrSizeControlsHtml('cqr')}
       <div class="row-actions" style="margin-top:10px">
         <a id="cqr_dl" class="btn btn-primary btn-sm" href="#" style="text-decoration:none">下載 QR Code 圖片</a>
+        <button class="btn btn-ghost btn-sm" id="cqr_open">開新分頁看大圖（可另存）</button>
         <button class="btn btn-ghost btn-sm" id="cqr_print">開新視窗列印</button>
       </div>
+      <p style="color:var(--muted);font-size:12px;margin-top:8px">如果「下載」按鈕沒反應（常見於手機瀏覽器），改用「開新分頁看大圖」，長按（手機）或右鍵（電腦）圖片選「儲存圖片」即可。</p>
     </div>
     <div class="panel">
       <h3>補充／出庫紀錄</h3>
@@ -602,7 +629,7 @@ async function viewConsDetail(id) {
       } catch (e) { toast(e.message, 'error'); }
     });
   }));
-  wireItemQrDownload('cqr_img', 'cqr_dl', 'cqr_print', 'cqr', 'cons', item['資產編號'], item['資產編號']);
+  wireItemQrDownload('cqr_img', 'cqr_dl', 'cqr_print', 'cqr', 'cons', item['資產編號'], item['資產編號'], 'cqr_open');
 }
 
 // ================= 人員設定 =================
@@ -785,13 +812,42 @@ async function downloadReport(type) {
 
 // 設備總表：資產類型（固定資產／消耗資產）、分類、編號、品項名稱、數量、位置、QR Code（本機產生後用 ExcelJS 直接嵌入儲存格）
 async function downloadCatalogReport() {
+  if (typeof QRCode === 'undefined' || typeof ExcelJS === 'undefined') {
+    toast('QR Code／Excel 函式庫尚未載入成功，請強制重新整理網頁（Ctrl+Shift+R）後再試一次；若仍失敗，可能是網路或瀏覽器限制，請聯絡管理員', 'error');
+    return;
+  }
   toast('設備總表產生中，請稍候...', 'success');
   try {
     const res = await Api.report('catalog');
     const sheetsData = res.data;
-    const wb = new ExcelJS.Workbook();
+
+    // 第一階段：先把「每一筆」的 QR Code 圖片都產生出來，只要有任何一筆失敗，整份報表就不產生、不下載
+    const prepared = {}; // { sheetName: [{ row, dataUrl }] }
+    const failures = []; // [{ sheetName, 品項名稱, 資產編號, error }]
     for (const sheetName of Object.keys(sheetsData)) {
       const rows = sheetsData[sheetName];
+      prepared[sheetName] = [];
+      for (const r of rows) {
+        const qrType = r['_qrType'] || (r['資產類型'] === '固定資產' ? 'fixed' : 'cons');
+        const qrUrl = itemQrUrl(qrType, r['資產編號']);
+        try {
+          const dataUrl = await QRCode.toDataURL(qrUrl, { width: 140, margin: 1 });
+          prepared[sheetName].push({ row: r, dataUrl });
+        } catch (e) {
+          failures.push({ sheetName, name: r['品項名稱'], id: r['資產編號'], error: e.message });
+        }
+      }
+    }
+
+    if (failures.length > 0) {
+      const detail = failures.slice(0, 5).map(f => `${f.sheetName}／${f.id}／${f.name}`).join('；');
+      toast(`已取消下載：共 ${failures.length} 筆 QR Code 產生失敗（${detail}${failures.length > 5 ? '...' : ''}）。請重新整理網頁再試一次，若持續失敗請聯絡管理員`, 'error');
+      return;
+    }
+
+    // 第二階段：全部成功才建立 Excel 檔案並下載
+    const wb = new ExcelJS.Workbook();
+    for (const sheetName of Object.keys(prepared)) {
       const ws = wb.addWorksheet(sheetName.slice(0, 31));
       ws.columns = [
         { header: '資產類型', key: 'assetType', width: 12 },
@@ -802,17 +858,13 @@ async function downloadCatalogReport() {
         { header: '位置備註', key: 'loc', width: 16 },
         { header: 'QR Code', key: 'qr', width: 16 },
       ];
-      for (let i = 0; i < rows.length; i++) {
-        const r = rows[i];
-        const qrType = r['_qrType'] || (r['資產類型'] === '固定資產' ? 'fixed' : 'cons');
+      for (const item of prepared[sheetName]) {
+        const r = item.row;
         const excelRow = ws.addRow({ assetType: r['資產類型'], cat: r['分類'], id: r['資產編號'], name: r['品項名稱'], qty: r['數量'], loc: r['位置備註'] });
         const rowNum = excelRow.number;
         ws.getRow(rowNum).height = 60;
-        try {
-          const dataUrl = await QRCode.toDataURL(itemQrUrl(qrType, r['資產編號']), { width: 140, margin: 1 });
-          const imgId = wb.addImage({ base64: dataUrl.split(',')[1], extension: 'png' });
-          ws.addImage(imgId, { tl: { col: 6, row: rowNum - 1 }, ext: { width: 54, height: 54 } });
-        } catch (e) { /* 單筆 QR 產生失敗就跳過，不影響其他資料 */ }
+        const imgId = wb.addImage({ base64: item.dataUrl.split(',')[1], extension: 'png' });
+        ws.addImage(imgId, { tl: { col: 6, row: rowNum - 1 }, ext: { width: 54, height: 54 } });
       }
     }
     const buf = await wb.xlsx.writeBuffer();
@@ -822,7 +874,7 @@ async function downloadCatalogReport() {
     a.href = URL.createObjectURL(blob);
     a.download = `設備總表_${ts}.xlsx`;
     document.body.appendChild(a); a.click(); a.remove();
-    toast('設備總表已下載', 'success');
+    toast('設備總表已下載，所有 QR Code 圖片皆已成功嵌入', 'success');
   } catch (e) {
     toast('產生設備總表失敗：' + e.message, 'error');
   }
