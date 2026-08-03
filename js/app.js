@@ -795,8 +795,30 @@ function viewReports() {
   }));
 }
 
+// 按需載入函式庫：xlsx / exceljs 檔案較大，只有「報表下載」頁面實際點下載時才載入，
+// 避免每個頁面（包含手機掃 QR Code）都要多下載這些用不到的檔案，影響載入速度
+const _loadedScripts = {};
+function loadScriptOnce(src) {
+  if (_loadedScripts[src]) return _loadedScripts[src];
+  _loadedScripts[src] = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('函式庫載入失敗：' + src));
+    document.head.appendChild(s);
+  });
+  return _loadedScripts[src];
+}
+async function ensureXlsx() {
+  if (typeof XLSX === 'undefined') await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+}
+async function ensureExcelJS() {
+  if (typeof ExcelJS === 'undefined') await loadScriptOnce('js/vendor/exceljs.min.js');
+}
+
 async function downloadReport(type) {
   try {
+    await ensureXlsx();
     const res = await Api.report(type);
     const wb = XLSX.utils.book_new();
     const sheets = res.data;
@@ -813,8 +835,14 @@ async function downloadReport(type) {
 
 // 設備總表：資產類型（固定資產／消耗資產）、分類、編號、品項名稱、數量、位置、QR Code（本機產生後用 ExcelJS 直接嵌入儲存格）
 async function downloadCatalogReport() {
-  if (typeof QRCode === 'undefined' || typeof ExcelJS === 'undefined') {
-    toast('QR Code／Excel 函式庫尚未載入成功，請強制重新整理網頁（Ctrl+Shift+R）後再試一次；若仍失敗，可能是網路或瀏覽器限制，請聯絡管理員', 'error');
+  if (typeof QRCode === 'undefined') {
+    toast('QR Code 函式庫尚未載入成功，請強制重新整理網頁（Ctrl+Shift+R）後再試一次；若仍失敗，可能是網路或瀏覽器限制，請聯絡管理員', 'error');
+    return;
+  }
+  try {
+    await ensureExcelJS();
+  } catch (e) {
+    toast('Excel 函式庫載入失敗，請確認網路連線後再試一次；若仍失敗請聯絡管理員', 'error');
     return;
   }
   toast('設備總表產生中，請稍候...', 'success');
@@ -977,11 +1005,11 @@ function openQrItemPicker(type, init) {
 // ---------- 入口 2：品項專屬 QR（品項已固定，只需選數量／動作） ----------
 async function viewQrItem(type, id) {
   qrPageShell('設備登記');
-  let init;
-  try { init = await anonQrInit(); } catch (e) { qrSetStep(`<div class="empty">${esc(e.message)}</div>`); return; }
-  const list = type === 'fixed' ? init.fixed : init.cons;
-  const item = list.find(x => x.id === id);
-  if (!item) { qrSetStep(`<div class="empty">找不到此品項，QR Code 可能已失效，請聯絡管理員</div>`); return; }
+  let item;
+  try {
+    const res = await anonCall('qrItemLookup', { itemType: type, id });
+    item = res.data.item;
+  } catch (e) { qrSetStep(`<div class="empty">${esc(e.message)}</div>`); return; }
   const today = new Date().toISOString().slice(0, 10);
   qrSetStep(`
     <div class="qr-entry" style="margin-bottom:14px"><div>${type === 'fixed' ? '📦' : '🧯'} <b>${esc(item.name)}</b><div class="meta">${esc(item.category || '')}　${esc(item.id)}</div></div></div>
