@@ -153,22 +153,65 @@ function itemQrImgSrc(type, id, size) {
   const s = size || 150;
   return 'https://api.qrserver.com/v1/create-qr-code/?size=' + s + 'x' + s + '&data=' + encodeURIComponent(itemQrUrl(type, id));
 }
-// 品項詳情頁用：先用線上服務圖立即顯示，載入完成後換成本機產生的圖（可直接下載列印，不受網路服務影響）
-async function wireItemQrDownload(imgId, dlId, printId, type, id, filenamePrefix) {
+
+// 尺寸選擇（給列印/下載使用，最小 1 公分）
+const QR_SIZE_PRESETS = [1, 1.5, 2, 3, 4, 5];
+function qrSizeControlsHtml(prefix) {
+  return `
+    <div class="field" style="margin-top:12px;max-width:220px">
+      <label>列印／下載尺寸</label>
+      <select id="${prefix}_size">
+        ${QR_SIZE_PRESETS.map(cm => `<option value="${cm}" ${cm === 2 ? 'selected' : ''}>${cm} x ${cm} 公分</option>`).join('')}
+        <option value="custom">自訂...</option>
+      </select>
+    </div>
+    <div class="field hidden" id="${prefix}_customField" style="max-width:220px"><label>自訂邊長（公分，最小 1）</label><input id="${prefix}_custom" type="number" min="1" step="0.1" value="2"/></div>`;
+}
+function qrSizeControlsValue(prefix) {
+  const sel = $('#' + prefix + '_size').value;
+  const cm = sel === 'custom' ? Number($('#' + prefix + '_custom').value || 1) : Number(sel);
+  return Math.max(1, cm);
+}
+
+// 品項詳情頁用：本機產生 QR 圖（不受網路服務影響），並綁定「依所選尺寸下載」「開新視窗依尺寸列印」
+async function wireItemQrDownload(imgId, dlId, printId, sizePrefix, type, id, filenamePrefix) {
+  let previewDataUrl = null;
   try {
-    const dataUrl = await QRCode.toDataURL(itemQrUrl(type, id), { width: 300, margin: 1 });
+    previewDataUrl = await QRCode.toDataURL(itemQrUrl(type, id), { width: 300, margin: 1 });
     const img = document.getElementById(imgId);
-    if (img) img.src = dataUrl;
-    const dl = document.getElementById(dlId);
-    if (dl) { dl.href = dataUrl; dl.setAttribute('download', filenamePrefix + '_QRCode.png'); }
-    const pr = document.getElementById(printId);
-    if (pr) pr.addEventListener('click', () => {
-      const w = window.open('');
-      w.document.write(`<img src="${dataUrl}" style="width:300px"/>`);
-      w.document.close();
-      w.print();
-    });
-  } catch (e) { /* 本機產生失敗就維持線上服務顯示的圖，下載/列印按鈕先不啟用 */ }
+    if (img) img.src = previewDataUrl;
+  } catch (e) { /* 本機產生失敗就維持線上服務顯示的圖 */ }
+
+  const sizeSel = document.getElementById(sizePrefix + '_size');
+  if (sizeSel) sizeSel.addEventListener('change', () => {
+    document.getElementById(sizePrefix + '_customField').classList.toggle('hidden', sizeSel.value !== 'custom');
+  });
+
+  const dl = document.getElementById(dlId);
+  if (dl) dl.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const cm = qrSizeControlsValue(sizePrefix);
+    const px = Math.max(80, Math.round(cm / 2.54 * 300)); // 以 300 dpi 估算下載檔案的像素大小，確保列印清晰
+    try {
+      const bigDataUrl = await QRCode.toDataURL(itemQrUrl(type, id), { width: px, margin: 1 });
+      const a = document.createElement('a');
+      a.href = bigDataUrl;
+      a.download = filenamePrefix + '_QRCode_' + cm + 'cm.png';
+      document.body.appendChild(a); a.click(); a.remove();
+    } catch (err) { toast('QR Code 產生失敗：' + err.message, 'error'); }
+  });
+
+  const pr = document.getElementById(printId);
+  if (pr) pr.addEventListener('click', () => {
+    const cm = qrSizeControlsValue(sizePrefix);
+    const src = previewDataUrl || itemQrImgSrc(type, id, 300);
+    const w = window.open('');
+    w.document.write(`<html><head><title>列印 QR Code</title></head><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh">
+      <img src="${src}" style="width:${cm}cm;height:${cm}cm"/>
+    </body></html>`);
+    w.document.close();
+    setTimeout(() => w.print(), 300);
+  });
 }
 
 // ================= App Shell =================
@@ -346,8 +389,8 @@ async function openFixedForm(existing) {
       let id;
       if (isEdit) { payload.id = existing['資產編號']; await Api.updateFixedAsset(payload); id = payload.id; }
       else { const r = await Api.addFixedAsset(payload); id = r.id; }
-      closeModal(); toast('已儲存', 'success');
-      if (isEdit) viewFixedDetail(id); else viewFixedList();
+      closeModal(); toast(isEdit ? '已儲存' : `已新增，編號：${id}`, 'success');
+      viewFixedDetail(id);
     } catch (e) { toast(e.message, 'error'); $('#saveBtn').disabled = false; }
   });
 }
@@ -387,8 +430,9 @@ async function viewFixedDetail(id) {
       <h3>📷 此設備專屬 QR Code</h3>
       <p style="color:var(--muted);font-size:12.5px">貼在設備本體上，同仁掃描後可直接登記這項設備的借出／歸還，不用先選項目。</p>
       <div class="qrcode-box"><img id="fqr_img" src="${itemQrImgSrc('fixed', a['資產編號'], 200)}" width="200" height="200"/></div>
+      ${qrSizeControlsHtml('fqr')}
       <div class="row-actions" style="margin-top:10px">
-        <a id="fqr_dl" class="btn btn-primary btn-sm" href="${itemQrImgSrc('fixed', a['資產編號'], 600)}" style="text-decoration:none">下載 QR Code 圖片</a>
+        <a id="fqr_dl" class="btn btn-primary btn-sm" href="#" style="text-decoration:none">下載 QR Code 圖片</a>
         <button class="btn btn-ghost btn-sm" id="fqr_print">開新視窗列印</button>
       </div>
     </div>
@@ -405,7 +449,7 @@ async function viewFixedDetail(id) {
     await guard(Api.deleteFixedAsset(a['資產編號'])); toast('已刪除', 'success'); location.hash = '#/fixed';
   });
   $('#content').querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', () => openFixedActionForm(a, btn.dataset.act)));
-  wireItemQrDownload('fqr_img', 'fqr_dl', 'fqr_print', 'fixed', a['資產編號'], a['資產編號']);
+  wireItemQrDownload('fqr_img', 'fqr_dl', 'fqr_print', 'fqr', 'fixed', a['資產編號'], a['資產編號']);
 }
 
 async function openFixedActionForm(asset, action) {
@@ -489,8 +533,8 @@ async function openConsForm(existing) {
       let id;
       if (isEdit) { payload.id = existing['資產編號']; await Api.updateConsumable(payload); id = payload.id; }
       else { const r = await Api.addConsumable(payload); id = r.id; }
-      closeModal(); toast('已儲存', 'success');
-      if (isEdit) viewConsDetail(id); else viewConsList();
+      closeModal(); toast(isEdit ? '已儲存' : `已新增，編號：${id}`, 'success');
+      viewConsDetail(id);
     } catch (e) { toast(e.message, 'error'); $('#saveBtn').disabled = false; }
   });
 }
@@ -528,8 +572,9 @@ async function viewConsDetail(id) {
       <h3>📷 此品項專屬 QR Code</h3>
       <p style="color:var(--muted);font-size:12.5px">貼在耗材架上，同仁掃描後可直接登記這項耗材的補充／出庫數量，不用先選項目。</p>
       <div class="qrcode-box"><img id="cqr_img" src="${itemQrImgSrc('cons', item['資產編號'], 200)}" width="200" height="200"/></div>
+      ${qrSizeControlsHtml('cqr')}
       <div class="row-actions" style="margin-top:10px">
-        <a id="cqr_dl" class="btn btn-primary btn-sm" href="${itemQrImgSrc('cons', item['資產編號'], 600)}" style="text-decoration:none">下載 QR Code 圖片</a>
+        <a id="cqr_dl" class="btn btn-primary btn-sm" href="#" style="text-decoration:none">下載 QR Code 圖片</a>
         <button class="btn btn-ghost btn-sm" id="cqr_print">開新視窗列印</button>
       </div>
     </div>
@@ -557,7 +602,7 @@ async function viewConsDetail(id) {
       } catch (e) { toast(e.message, 'error'); }
     });
   }));
-  wireItemQrDownload('cqr_img', 'cqr_dl', 'cqr_print', 'cons', item['資產編號'], item['資產編號']);
+  wireItemQrDownload('cqr_img', 'cqr_dl', 'cqr_print', 'cqr', 'cons', item['資產編號'], item['資產編號']);
 }
 
 // ================= 人員設定 =================
@@ -705,7 +750,7 @@ const REPORT_TYPES = [
   { key: 'consTotal', label: '銷耗資產各項總量' },
   { key: 'purchase', label: '待採購表單（品項與建議採購數量）' },
   { key: 'repair', label: '待維修表單（固定資產損壞數量）' },
-  { key: 'catalog', label: '設備總表（分類／編號／品名／QR Code圖片，可直接列印）' },
+  { key: 'catalog', label: '設備總表（資產類型/分類/編號/品名/QR Code圖片，可直接列印）' },
 ];
 
 function viewReports() {
@@ -738,7 +783,7 @@ async function downloadReport(type) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-// 設備總表：分類、編號、品項名稱、數量、位置、QR Code（本機產生後用 ExcelJS 直接嵌入儲存格）
+// 設備總表：資產類型（固定資產／消耗資產）、分類、編號、品項名稱、數量、位置、QR Code（本機產生後用 ExcelJS 直接嵌入儲存格）
 async function downloadCatalogReport() {
   toast('設備總表產生中，請稍候...', 'success');
   try {
@@ -747,9 +792,9 @@ async function downloadCatalogReport() {
     const wb = new ExcelJS.Workbook();
     for (const sheetName of Object.keys(sheetsData)) {
       const rows = sheetsData[sheetName];
-      const qrType = sheetName.indexOf('固定') !== -1 ? 'fixed' : 'cons';
       const ws = wb.addWorksheet(sheetName.slice(0, 31));
       ws.columns = [
+        { header: '資產類型', key: 'assetType', width: 12 },
         { header: '分類', key: 'cat', width: 14 },
         { header: '資產編號', key: 'id', width: 14 },
         { header: '品項名稱', key: 'name', width: 24 },
@@ -759,13 +804,14 @@ async function downloadCatalogReport() {
       ];
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
-        const excelRow = ws.addRow({ cat: r['分類'], id: r['資產編號'], name: r['品項名稱'], qty: r['數量'], loc: r['位置備註'] });
+        const qrType = r['_qrType'] || (r['資產類型'] === '固定資產' ? 'fixed' : 'cons');
+        const excelRow = ws.addRow({ assetType: r['資產類型'], cat: r['分類'], id: r['資產編號'], name: r['品項名稱'], qty: r['數量'], loc: r['位置備註'] });
         const rowNum = excelRow.number;
         ws.getRow(rowNum).height = 60;
         try {
           const dataUrl = await QRCode.toDataURL(itemQrUrl(qrType, r['資產編號']), { width: 140, margin: 1 });
           const imgId = wb.addImage({ base64: dataUrl.split(',')[1], extension: 'png' });
-          ws.addImage(imgId, { tl: { col: 5, row: rowNum - 1 }, ext: { width: 54, height: 54 } });
+          ws.addImage(imgId, { tl: { col: 6, row: rowNum - 1 }, ext: { width: 54, height: 54 } });
         } catch (e) { /* 單筆 QR 產生失敗就跳過，不影響其他資料 */ }
       }
     }
@@ -1007,4 +1053,3 @@ async function router() {
 
 window.addEventListener('hashchange', router);
 window.addEventListener('DOMContentLoaded', router);
-
